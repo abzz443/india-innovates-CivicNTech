@@ -43,7 +43,7 @@ Bi-encoders are fast but approximate. Cross-encoders are precise but slow. RAGCo
 ## Quickstart
 
 ```bash
-git clone https://github.com/yourusername/RAGCore.git
+git clone https://github.com/abzz443/RAGCore.git
 cd RAGCore
 pip install -r requirements.txt
 ```
