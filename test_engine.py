@@ -1,183 +1,119 @@
 """
-RAGCore — CLI entry point
-=========================
-
-Usage examples
---------------
-Index a document:
-    python main.py index reports/budget_session.pdf
-
-Summarise a document:
-    python main.py summarise reports/cabinet_minutes.pdf
-
-Ask a question:
-    python main.py query "What was decided about infrastructure funding?"
-
-Interactive Q&A session:
-    python main.py chat
-
-Reset the vector store:
-    python main.py index reports/new_doc.pdf --reset
+tests/test_engine.py
+====================
+Unit tests for RAGCore engine components.
+Run with:  pytest tests/ -v
 """
 
-import argparse
-import json
-import logging
-import sys
-import textwrap
-
-from src.engine import PipelineConfig, RAGPipeline
-
-logging.basicConfig(
-    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-    level=logging.WARNING,          # keep output clean by default
+import pytest
+from engine import (
+    DocumentLoader,
+    PipelineConfig,
+    SentenceAwareChunker,
+    Chunk,
 )
 
-BANNER = """
-  ██████╗  █████╗  ██████╗  ██████╗ ██████╗ ██████╗ ███████╗
-  ██╔══██╗██╔══██╗██╔════╝ ██╔════╝██╔═══██╗██╔══██╗██╔════╝
-  ██████╔╝███████║██║  ███╗██║     ██║   ██║██████╔╝█████╗
-  ██╔══██╗██╔══██║██║   ██║██║     ██║   ██║██╔══██╗██╔══╝
-  ██║  ██║██║  ██║╚██████╔╝╚██████╗╚██████╔╝██║  ██║███████╗
-  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
-  Retrieval Augmented Generation — v1.0.0
-"""
 
-DIVIDER = "─" * 62
+# ─────────────────────────────────────────────────────────────────────────────
+#  PipelineConfig
+# ─────────────────────────────────────────────────────────────────────────────
 
+class TestPipelineConfig:
+    def test_defaults(self):
+        cfg = PipelineConfig()
+        assert cfg.chunk_size == 400
+        assert cfg.chunk_overlap == 80
+        assert cfg.top_k_retrieve == 12
+        assert cfg.top_k_rerank == 4
+        assert 0 < cfg.min_confidence < 1
 
-def _print(label: str, value: str, width: int = 54):
-    wrapped = textwrap.fill(value, width=width, subsequent_indent="             ")
-    print(f"  {label:<12} {wrapped}")
-
-
-def cmd_index(args, pipeline: RAGPipeline):
-    print(f"\n  Indexing: {args.file}")
-    n = pipeline.index(args.file, reset=args.reset)
-    print(f"  ✓ {n} chunks stored in vector store.\n")
+    def test_custom_chunk_size(self):
+        cfg = PipelineConfig(chunk_size=256, chunk_overlap=32)
+        assert cfg.chunk_size == 256
+        assert cfg.chunk_overlap == 32
 
 
-def cmd_summarise(args, pipeline: RAGPipeline):
-    result = pipeline.summarise(args.file)
-    if args.json:
-        print(json.dumps(result.__dict__, indent=2))
-        return
+# ─────────────────────────────────────────────────────────────────────────────
+#  SentenceAwareChunker
+# ─────────────────────────────────────────────────────────────────────────────
 
-    print(f"\n  Summarising: {args.file}")
-    print(f"\n{DIVIDER}")
-    _print("Source:", result.source)
-    _print("Summary:", result.summary)
-    print(f"  {'Time:':<12} {result.latency_ms:.0f} ms")
-    print(f"{DIVIDER}\n")
+class TestSentenceAwareChunker:
 
+    @pytest.fixture
+    def chunker(self):
+        cfg = PipelineConfig(chunk_size=50, chunk_overlap=10, min_chunk_length=10)
+        return SentenceAwareChunker(cfg)
 
-def cmd_query(args, pipeline: RAGPipeline):
-    result = pipeline.query(args.question)
-    if args.json:
-        print(json.dumps(result.__dict__, indent=2))
-        return
+    def test_returns_list_of_chunks(self, chunker):
+        text = "The committee met on Monday. They discussed budget allocation. No resolution was reached."
+        result = chunker.split(text, source="test.txt")
+        assert isinstance(result, list)
+        assert all(isinstance(c, Chunk) for c in result)
 
-    print(f"\n{DIVIDER}")
-    _print("Query:", result.query)
-    _print("Answer:", result.answer)
-    print(f"  {'Confidence:':<12} {result.confidence:.1%}")
-    print(f"  {'Latency:':<12} {result.latency_ms:.0f} ms")
-    if result.sources:
-        _print("Sources:", ", ".join(result.sources))
-    if args.verbose and result.passages:
-        print(f"\n  Top passage:")
-        print(textwrap.fill(
-            result.passages[0][:500] + "…",
-            width=60,
-            initial_indent="    ",
-            subsequent_indent="    ",
-        ))
-    print(f"{DIVIDER}\n")
+    def test_chunk_ids_are_unique(self, chunker):
+        words = " ".join(f"word{i}." for i in range(200))
+        chunks = chunker.split(words, source="doc.txt")
+        ids = [c.id for c in chunks]
+        assert len(ids) == len(set(ids))
 
+    def test_short_text_yields_single_chunk(self, chunker):
+        text = "A short document. It has two sentences."
+        chunks = chunker.split(text, source="short.txt")
+        assert len(chunks) == 1
 
-def cmd_chat(pipeline: RAGPipeline):
-    print("\n  Interactive mode — type 'exit' to quit.\n")
-    while True:
-        try:
-            q = input("  ❯ ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\n  Session ended.")
-            break
-        if not q:
-            continue
-        if q.lower() in {"exit", "quit", "q"}:
-            print("  Session ended.")
-            break
+    def test_empty_text_yields_no_chunks(self, chunker):
+        chunks = chunker.split("", source="empty.txt")
+        assert chunks == []
 
-        result = pipeline.query(q)
-        print(f"\n  Answer     : {result.answer}")
-        print(f"  Confidence : {result.confidence:.1%}")
-        print(f"  Latency    : {result.latency_ms:.0f} ms\n")
+    def test_source_propagated(self, chunker):
+        text = "Parliament passed the bill. The vote was unanimous. All parties agreed."
+        chunks = chunker.split(text, source="parliament.txt")
+        for c in chunks:
+            assert c.source == "parliament.txt"
+
+    def test_word_count_reasonable(self, chunker):
+        text = " ".join(f"sentence{i} has words." for i in range(100))
+        chunks = chunker.split(text)
+        for c in chunks:
+            assert c.word_count > 0
+            assert c.word_count <= chunker.chunk_size + 20  # allow sentence spillover
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="ragcore",
-        description="RAGCore — local retrieval-augmented generation pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    sub = p.add_subparsers(dest="cmd", required=True)
+# ─────────────────────────────────────────────────────────────────────────────
+#  DocumentLoader (without real files)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # index
-    idx = sub.add_parser("index", help="Ingest a document into the vector store")
-    idx.add_argument("file", help="Path to .pdf, .txt, or .md file")
-    idx.add_argument("--reset", action="store_true",
-                     help="Wipe existing index before ingesting")
+class TestDocumentLoader:
 
-    # summarise
-    s = sub.add_parser("summarise", help="Abstractive summary of a document")
-    s.add_argument("file", help="Path to document")
-    s.add_argument("--json", action="store_true", help="Output as JSON")
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            DocumentLoader.load(tmp_path / "nonexistent.txt")
 
-    # query
-    q = sub.add_parser("query", help="Ask a question against indexed documents")
-    q.add_argument("question", help="Natural language question")
-    q.add_argument("--json", action="store_true", help="Output as JSON")
-    q.add_argument("--verbose", action="store_true",
-                   help="Print top source passage")
+    def test_unsupported_format_raises(self, tmp_path):
+        f = tmp_path / "file.docx"
+        f.write_text("content")
+        with pytest.raises(ValueError, match="Unsupported format"):
+            DocumentLoader.load(f)
 
-    # chat
-    sub.add_parser("chat", help="Start an interactive Q&A session")
+    def test_load_txt(self, tmp_path):
+        f = tmp_path / "doc.txt"
+        f.write_text("Hello world. This is a test document.")
+        text, meta = DocumentLoader.load(f)
+        assert "Hello world" in text
+        assert meta["filename"] == "doc.txt"
+        assert meta["char_count"] > 0
+        assert "load_time_ms" in meta
 
-    return p
+    def test_load_md(self, tmp_path):
+        f = tmp_path / "notes.md"
+        f.write_text("# Meeting Notes\n\nPoint one. Point two.")
+        text, meta = DocumentLoader.load(f)
+        assert "Meeting Notes" in text
+        assert meta["filename"] == "notes.md"
 
-
-def main():
-    parser = build_parser()
-    args = parser.parse_args()
-
-    json_mode = getattr(args, "json", False)
-    if not json_mode and args.cmd != "chat":
-        print(BANNER)
-    elif args.cmd == "chat":
-        print(BANNER)
-
-    cfg = PipelineConfig()
-    pipeline = RAGPipeline(cfg)
-
-    dispatch = {
-        "index": lambda: cmd_index(args, pipeline),
-        "summarise": lambda: cmd_summarise(args, pipeline),
-        "query": lambda: cmd_query(args, pipeline),
-        "chat": lambda: cmd_chat(pipeline),
-    }
-
-    try:
-        dispatch[args.cmd]()
-    except FileNotFoundError as e:
-        print(f"\n  ✗ {e}\n", file=sys.stderr)
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\n  Interrupted.")
-        sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()
+    def test_metadata_structure(self, tmp_path):
+        f = tmp_path / "report.txt"
+        f.write_text("Some report content here.")
+        _, meta = DocumentLoader.load(f)
+        assert set(meta.keys()) >= {"filename", "char_count", "load_time_ms"}
+ 
