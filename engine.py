@@ -82,7 +82,7 @@ class DocumentLoader:
     Strips boilerplate whitespace and normalises Unicode.
     """
 
-    SUPPORTED = {".pdf", ".txt", ".md"}
+    SUPPORTED = {".pd", ".txt", ".md"}
 
     @classmethod
     def load(cls, path: str | Path) -> tuple[str, dict]:
@@ -100,7 +100,7 @@ class DocumentLoader:
             )
 
         t0 = time.perf_counter()
-        if path.suffix.lower() == ".pdf":
+        if path.suffix.lower() == ".pd":
             text, pages = cls._load_pdf(path)
         else:
             text = path.read_text(encoding="utf-8", errors="ignore")
@@ -127,8 +127,8 @@ class DocumentLoader:
     def _load_pdf(path: Path) -> tuple[str, int]:
         try:
             import PyPDF2
-        except ImportError:
-            raise ImportError("Install PyPDF2:  pip install PyPDF2")
+        except ImportError as err:
+            raise ImportError("Install PyPDF2:  pip install PyPDF2") from err
 
         parts: list[str] = []
         with open(path, "rb") as fh:
